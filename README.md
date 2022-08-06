@@ -9,7 +9,7 @@ This is a very simple crowdfund dapp where users can:
 * Get refund of the donation amount if campaign fails
 
 ## Live Demo
-[CrowdFund Dapp](https://dacadeorg.github.io/celo-marketplace-dapp/)
+[CrowdFund Dapp](https://jilanixxx.github.io/crowdfund-celo/)
 
 ## Usage
 
