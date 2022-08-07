@@ -42,7 +42,7 @@ contract CrowdFund is ReentrancyGuard, Ownable {
         uint256 index,
         address indexed creator,
         uint256 pledged,
-        bool success
+        Status status
     );
     event Donate(uint index, address indexed caller, uint amount);
     event Refund(uint index, address indexed caller, uint amount);
@@ -50,6 +50,13 @@ contract CrowdFund is ReentrancyGuard, Ownable {
     uint256 private campaignsLength = 0;
     address internal cUsdTokenAddress =
         0x874069Fa1Eb16D44d622F2e0Ca25eeA172369bC1;
+
+    enum Status{
+        open,
+        ended,
+        success,
+        banned
+    }
 
     struct Campaign {
         address payable creator;
@@ -60,13 +67,14 @@ contract CrowdFund is ReentrancyGuard, Ownable {
         uint256 pledged;
         uint256 donationsCount;
         uint256 endAt;
-        bool ended;
-        bool success;
+        Status status;
     }
 
     mapping(uint256 => Campaign) private campaigns;
-    mapping(uint => bool) public banned;
     mapping(uint => mapping(address => uint)) private donatedAmount;
+    mapping(uint => address[]) donators;
+
+
 
     modifier onlyCreator(uint _index) {
         require(campaigns[_index].creator == msg.sender, "not creator");
@@ -74,15 +82,16 @@ contract CrowdFund is ReentrancyGuard, Ownable {
     }
 
     modifier onlyNotEnded(uint256 _index) {
-        require(!campaigns[_index].ended, "ended");
+        require(campaigns[_index].status != Status.banned, "ended");
         _;
     }
 
     modifier onlyNotBanned(uint _index) {
-        require(!banned[_index], "is banned");
+        require(campaigns[_index].status != Status.banned, "is banned");
         _;
     }
 
+    //Checks for the owner of the contract
     modifier onlyNotAdmin() {
         require(owner() != msg.sender, "not authorized");
         _;
@@ -106,6 +115,7 @@ contract CrowdFund is ReentrancyGuard, Ownable {
         newCampaigns.organization = _organization;
         newCampaigns.description = _description;
         newCampaigns.image = _image;
+        //Feeded as days from the front end
         newCampaigns.endAt = block.timestamp + _endAt;
         newCampaigns.goal = _goal;
         emit Launch(index, msg.sender, _goal, block.timestamp, _endAt);
@@ -132,7 +142,7 @@ contract CrowdFund is ReentrancyGuard, Ownable {
         Campaign storage campaign = campaigns[_index];
         require(block.timestamp < campaign.endAt, "over");
         require(campaign.creator != msg.sender, "creator can't donate");
-        require(_amount >= 1 ether, "donation too low");
+        require(_amount >= 1 && _amount <= campaign.goal - campaign.pledged, "donation too low or too high");
         // fund stored in contract
         require(
             IERC20Token(cUsdTokenAddress).transferFrom(
@@ -145,7 +155,9 @@ contract CrowdFund is ReentrancyGuard, Ownable {
         campaign.pledged += _amount;
         campaign.donationsCount++;
         donatedAmount[_index][msg.sender] += _amount;
+        donators[_index].push(msg.sender);
         emit Donate(_index, msg.sender, _amount);
+
     }
 
     // end campaign
@@ -155,15 +167,14 @@ contract CrowdFund is ReentrancyGuard, Ownable {
         nonReentrant
         onlyNotAdmin
         onlyNotBanned(_index)
-        onlyNotEnded(_index)
-        onlyCreator(_index)
     {
         Campaign storage campaign = campaigns[_index];
-        require(block.timestamp >= campaign.endAt, "not over");
-        campaign.ended = true;
+        campaigns[_index].status = Status.ended;
+
         // success is true only if goal is reached or exceeded
         if (campaign.pledged >= campaign.goal) {
-            campaign.success = true;
+            campaigns[_index].status = Status.success;
+
             // pledged amount taken out by creator
             require(
                 IERC20Token(cUsdTokenAddress).transfer(
@@ -172,16 +183,14 @@ contract CrowdFund is ReentrancyGuard, Ownable {
                 ),
                 "Transfer failed."
             );
-        } else {
-            campaign.success = false;
         }
-        emit End(_index, msg.sender, campaign.pledged, campaign.success);
+        emit End(_index, msg.sender, campaign.pledged, campaigns[_index].status);
     }
 
     // withdraw donation if campaign is not a success
     function refund(uint _index) external payable nonReentrant onlyNotAdmin {
-        require(campaigns[_index].ended, "not ended");
-        require(!campaigns[_index].success, "is successful");
+        require(block.timestamp > campaigns[_index].endAt, "Not ended yet");
+        require(campaigns[_index].status != Status.success, "is successful");
         require(donatedAmount[_index][msg.sender] > 0, "Insufficient balance");
         uint withdrawAmount = donatedAmount[_index][msg.sender];
         donatedAmount[_index][msg.sender] = 0;
@@ -199,8 +208,15 @@ contract CrowdFund is ReentrancyGuard, Ownable {
         onlyNotBanned(_index)
         onlyNotEnded(_index)
     {
-        banned[_index] = true;
-        campaigns[_index].ended = true;
+        for(uint i =0; i < donators[_index].length; i++ ){
+            address donatorAddress = donators[_index][i];
+            require(
+                IERC20Token(cUsdTokenAddress).transfer(donatorAddress, donatedAmount[_index][donatorAddress]),
+                "Transfer failed."
+            );
+            donatedAmount[_index][donatorAddress] = 0;
+        }
+        campaigns[_index].status = Status.banned;
     }
 
     // deployer end campaign
@@ -214,10 +230,10 @@ contract CrowdFund is ReentrancyGuard, Ownable {
     {
         Campaign storage campaign = campaigns[_index];
         require(block.timestamp >= campaign.endAt, "not over");
-        campaign.ended = true;
+        campaigns[_index].status = Status.ended;
         // success is true only if goal is reached or exceeded
         if (campaign.pledged >= campaign.goal) {
-            campaign.success = true;
+            campaigns[_index].status = Status.success;
             // pledged transferred to creator
             require(
                 IERC20Token(cUsdTokenAddress).transfer(
@@ -227,10 +243,11 @@ contract CrowdFund is ReentrancyGuard, Ownable {
                 "Transfer failed."
             );
         } else {
-            campaign.success = false;
+            campaigns[_index].status = Status.success;
+
         }
         // deployer is ender
-        emit End(_index, msg.sender, campaign.pledged, campaign.success);
+        emit End(_index, msg.sender, campaign.pledged, campaign.status);
     }
 
     function getCampaignsLength() public view returns (uint256) {
